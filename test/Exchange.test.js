@@ -240,8 +240,83 @@ contract('Exchange', ([deployer, feeAccount, user1, user2]) => {
     describe('order actions', () => {
 
         beforeEach(async () => {
+            //user1 deposit ether only
             await exchange.depositEther( { from: user1, value: ether(1)})
+            //give tokens to user2
+            await token.transfer(user2, tokens(100), { from: deployer})
+            //user2 deposit tokens only
+            await token.approve(exchange.address, tokens(2), { from: user2})
+            await exchange.depositToken(token.address, tokens(2), {from: user2})
+            //user1 make an order to buy tokens with ether 
             await exchange.makeOrder(token.address, tokens(1), ETHER_ADDRESS, ether(1), {from: user1})
+        })
+
+        describe('filling orders', () => {
+            let result 
+
+            describe('success', ()=> {
+
+                beforeEach(async () => {
+                    result = await exchange.fillOrder('1', { from: user2 })
+                })
+
+                it('updates filled orders', async () => {
+                    const orderFilled = await exchange.orderFilled(1)
+                    orderFilled.should.equal(true)
+                })
+
+                it('execute the trade and charges fees', async() => {
+                    let balance
+
+                    balance = await exchange.balanceOf(token.address, user1)
+                    balance.toString().should.equal(tokens(1).toString(), 'user1 recieved tokens')
+
+                    balance = await exchange.balanceOf(ETHER_ADDRESS, user2)
+                    balance.toString().should.equal(ether(1).toString(), 'user2 recieved ether')
+
+                    balance = await exchange.balanceOf(ETHER_ADDRESS, user1)
+                    balance.toString().should.equal('0', 'user2 ether deducted')
+
+                    balance = await exchange.balanceOf(token.address, user2)
+                    balance.toString().should.equal(tokens(0.9).toString(), 'user2 tokens deducted with fees applied')
+
+                    const feeAccount = await exchange.feeAccount()
+                    balance = await exchange.balanceOf(token.address, feeAccount)
+                    balance.toString().should.equal(tokens(0.1).toString(), 'feeAccount recieved fee')
+                })
+
+                it('emits a cancel event', async () => {
+                    const log = result.logs[0]
+                    log.event.should.equal('Trade')
+                    const event = log.args
+                    event.id.toString().should.equal('1', "id is correct")
+                    event.user.should.equal(user1, "user is correct")
+                    event.tokenGet.should.equal(token.address, "tokenGet is correct")
+                    event.amountGet.toString().should.equal(tokens(1).toString(), "amount get is correct")
+                    event.tokenGive.should.equal(ETHER_ADDRESS, "token give is correct")
+                    event.amountGive.toString().should.equal(ether(1).toString(), "amount give is correct")
+                    event.userFill.should.equal(user2, 'userFill is correct')
+                    event.timestamp.toString().length.should.be.at.least(1, "timestamp is correct")
+                })
+            })
+
+            describe('failure', ()=> {
+                it('rejects invalid user ids', async() => {
+                    const invalidOrderID = 999999
+                    await exchange.fillOrder(invalidOrderID, { from: user1 }).should.be.rejected
+                })
+
+                it('rejects already filled orders', async() => {
+                    await exchange.fillOrder('1', {from: user2 }).should.be.fulfilled
+                    await exchange.fillOrder('1', {from: user2 }).should.be.rejected
+                })
+
+                it('rejects cancelled orders', async() => {
+                    await exchange.cancelOrder('1', {from: user1 }).should.be.fulfilled
+                    await exchange.fillOrder('1', {from: user2 }).should.be.rejected
+                })
+
+            })
         })
 
         describe('cancelling orders', () => {
